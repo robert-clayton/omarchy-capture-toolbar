@@ -1,7 +1,9 @@
 #!/bin/bash
 # Crop the frozen frame to a selection (physical pixels) and finish the way
 # omarchy-capture-screenshot does: save, copy, notify with an Edit action.
+# The frame belongs to this capture alone, so it is deleted afterwards.
 frozen=$1 x=$2 y=$3 w=$4 h=$5
+trap 'rm -f "$frozen"' EXIT
 [[ -f ~/.config/user-dirs.dirs ]] && source ~/.config/user-dirs.dirs
 OUTPUT_DIR="${OMARCHY_SCREENSHOT_DIR:-${XDG_PICTURES_DIR:-$HOME/Pictures}}"
 mkdir -p "$OUTPUT_DIR"

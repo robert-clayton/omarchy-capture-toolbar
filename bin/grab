@@ -1,18 +1,35 @@
 #!/bin/bash
 # Freeze the focused monitor into $1 (PNG) and print its geometry plus the
-# windows on it as JSON, for the ziru.capture toolbar.
+# windows on it as JSON, for the ziru.capture toolbar. Exits non-zero, printing
+# nothing, if the frame could not be captured.
 out=$1
-mon=$(hyprctl monitors -j | jq -c 'map(select(.focused))[0]')
+[[ -n $out ]] || exit 2
+
+# Frames are unique per grab; drop ones a closed or failed toolbar left behind.
+find "$(dirname "$out")" -maxdepth 1 -name 'ziru-capture-frame-*.png' -mmin +1 -delete 2>/dev/null
+
+mon=$(hyprctl monitors -j | jq -c 'map(select(.focused))[0] // empty') || exit 1
+[[ -n $mon ]] || exit 1
 name=$(jq -r .name <<<"$mon")
 
-# Software cursors get baked into grim frames; switch to hardware cursors for the grab.
-hw=$(hyprctl getoption cursor:no_hardware_cursors -j | jq '.int')
+# Software cursors get baked into grim frames, so switch to hardware cursors
+# for the grab. The EXIT trap restores the setting even if this script is killed.
 set_hw() {
   hyprctl eval "hl.config({ cursor = { no_hardware_cursors = $1 } })" &>/dev/null ||
     hyprctl keyword cursor:no_hardware_cursors "$1" &>/dev/null
 }
-if [[ $hw != 0 ]]; then set_hw 0; sleep 0.03; fi
-grim -l 0 -o "$name" "$out.part" && mv -f "$out.part" "$out"
-if [[ $hw != 0 ]]; then set_hw "$hw"; fi
+hw=$(hyprctl getoption cursor:no_hardware_cursors -j | jq '.int')
+if [[ $hw =~ ^[0-9]+$ ]] && (( hw != 0 )); then
+  trap 'set_hw "$hw"' EXIT
+  trap 'exit 1' HUP INT TERM
+  # shortcut: a fixed wait for the cursor change to reach the screen; 30 ms
+  # still showed the arrow on NVIDIA. Raise it if arrows appear in captures.
+  set_hw 0 && sleep 0.15
+fi
+
+if ! grim -l 0 -o "$name" "$out.part" || ! mv -f "$out.part" "$out"; then
+  rm -f "$out.part"
+  exit 1
+fi
 
 jq -cn --argjson m "$mon" --argjson c "$(hyprctl clients -j)" '{monitor: $m, clients: $c}'

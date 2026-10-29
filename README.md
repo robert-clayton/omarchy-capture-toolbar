@@ -11,8 +11,7 @@ It is an Omarchy shell plugin (id `ziru.capture`). Saving, copying, the editor a
 - A delay of 0, 3, 5 or 10 seconds (`D`). For screenshots the timer runs first and the toolbar comes back with a fresh freeze. For recordings the countdown runs after you select.
 - Desktop audio, microphone and webcam toggles in Record mode (`A`, `M`, `C`).
 - Copy text from the screen, read a QR code, or pick a color (`T`, `Q`, `P`).
-- A Stop recording button while a recording runs (`S`).
-- `Enter` captures what is highlighted. `Esc` closes the toolbar.
+- `Enter` captures what is highlighted. `Esc` closes the toolbar. While a recording runs, Print stops it instead of opening the toolbar (with the binding below).
 - It remembers your last choices in `~/.local/state/ziru-capture-toolbar.json`.
 
 Screenshots are cropped from the frozen frame, saved to your screenshot folder (`OMARCHY_SCREENSHOT_DIR`, or your Pictures folder), copied to the clipboard, and announced with a notification that opens the editor (`OMARCHY_SCREENSHOT_EDITOR`, default `tensaku-edit`). Recordings run `omarchy-capture-screenrecording` on the area you chose.

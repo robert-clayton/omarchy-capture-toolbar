@@ -26,7 +26,6 @@ Item {
 
   property bool opened: false
   property bool grabbing: false
-  property bool recording: false
   property bool skipDelay: false
 
   property string mode: "screenshot"   // screenshot | record
@@ -41,12 +40,19 @@ Item {
   // Helper scripts ship inside the plugin folder (bin/).
   readonly property string helperDir: decodeURIComponent(Qt.resolvedUrl("bin").toString().replace(/^file:\/\//, ""))
   readonly property string stateFile: home + "/.local/state/ziru-capture-toolbar.json"
-  readonly property string frozenFile: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/ziru-capture-frozen.png"
+  readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || "/tmp"
 
   // Captured when the toolbar opens
   property var monitor: null     // { name, x, y } in global logical coordinates
   property var windows: []       // [{ x, y, w, h }] in overlay coordinates, topmost first
   property int frozenSerial: 0
+  // Each grab gets its own frame file, so a pending screenshot never reads the
+  // next capture's frame. shot deletes it after cropping; close() deletes an
+  // unused one.
+  property string frameFile: ""
+  property bool frameHandedOff: false
+  // False once the toolbar is closed, so a grab that finishes late is dropped.
+  property bool wanted: false
 
   // Selection
   property bool pressed: false
@@ -59,7 +65,7 @@ Item {
 
   // A screenshot timer runs before selecting; a recording delay runs after it.
   readonly property bool timerPending: mode === "screenshot" && delay > 0 && !skipDelay
-  readonly property var highlight: dragging ? dragRect() : hoverRect
+  readonly property var highlight: dragging ? dragRect() : (target === "screen" ? fullRect() : hoverRect)
 
   property color background: Commons.Color.menu.background
   property color foreground: Commons.Color.menu.text
@@ -73,14 +79,8 @@ Item {
   }
 
   Process {
-    id: recordingCheck
-    command: ["pgrep", "-f", "^gpu-screen-recorder"]
-    onExited: function(exitCode) { root.recording = exitCode === 0 }
-  }
-
-  Process {
     id: grab
-    command: ["bash", root.helperDir + "/grab", root.frozenFile]
+    command: ["bash", root.helperDir + "/grab", root.frameFile]
     stdout: StdioCollector { id: grabOut }
     onExited: function(exitCode) { root.finishGrab(exitCode === 0 ? grabOut.text : "") }
   }
@@ -118,15 +118,17 @@ Item {
     root.pressed = false
     root.dragging = false
     root.hoverRect = null
-    root.recording = false
-    recordingCheck.running = true
     // Freeze before the overlay maps, so it is never in the frame.
+    root.frameFile = root.runtimeDir + "/ziru-capture-frame-" + Date.now() + ".png"
+    root.frameHandedOff = false
+    root.wanted = true
     root.grabbing = true
     grab.running = true
   }
 
   function finishGrab(text) {
     root.grabbing = false
+    if (!root.wanted) { discardFrame(); return }
     var d = null
     try { d = JSON.parse(text) } catch (e) { d = null }
     if (!d || !d.monitor) {
@@ -150,6 +152,7 @@ Item {
     list.sort(function(a, b) {
       var sa = a.workspace.id === special ? 1 : 0, sb = b.workspace.id === special ? 1 : 0
       if (sa !== sb) return sb - sa
+      if (!!a.fullscreen !== !!b.fullscreen) return a.fullscreen ? -1 : 1
       if (a.floating !== b.floating) return a.floating ? -1 : 1
       return a.focusHistoryID - b.focusHistoryID
     })
@@ -160,15 +163,22 @@ Item {
     root.frozenSerial += 1
     root.opened = true
     Qt.callLater(function() {
-      if (root.target === "screen") root.hoverRect = root.fullRect()
       keyCatcher.forceActiveFocus()
     })
   }
 
   function close() {
+    root.wanted = false
     root.opened = false
     root.pressed = false
     root.dragging = false
+    if (!root.grabbing) discardFrame()
+  }
+
+  function discardFrame() {
+    if (root.frameFile && !root.frameHandedOff)
+      Quickshell.execDetached(["rm", "-f", root.frameFile])
+    root.frameFile = ""
   }
 
   function dismiss() {
@@ -235,7 +245,7 @@ Item {
     var script = "export PATH=" + shellQuote(root.omarchyPath + "/bin") + ":\"$PATH\"; sleep 0.2; "
     if (useDelay && root.delay > 0) {
       script += "omarchy-notification-send 'Recording in " + root.delay + " seconds' -t " + (root.delay * 1000) + " || true; "
-      script += "sleep " + root.delay + "; "
+      script += "sleep " + root.delay + "; omarchy-notification-dismiss 'Recording in'; sleep 0.3; "
     }
     Quickshell.execDetached(["bash", "-c", script + command])
   }
@@ -246,27 +256,27 @@ Item {
       var f = frozen.sourceSize.width > 0 ? frozen.sourceSize.width / panel.width : 1
       var x = Math.round(r.x * f), y = Math.round(r.y * f)
       var w = Math.round(r.w * f), h = Math.round(r.h * f)
-      root.run(shellQuote(root.helperDir + "/shot") + " " + shellQuote(root.frozenFile) + " " + [x, y, w, h].join(" "), false)
+      root.frameHandedOff = true
+      root.run(shellQuote(root.helperDir + "/shot") + " " + shellQuote(root.frameFile) + " " + [x, y, w, h].join(" "), false)
       return
     }
+    // Name the monitor now: --fullscreen would pick whichever monitor has focus
+    // when the recording delay ends.
+    var sel = isFull(r) ? "monitor:" + root.monitor.name
+      : Math.round(r.x + root.monitor.x) + "," + Math.round(r.y + root.monitor.y) + " " + Math.round(r.w) + "x" + Math.round(r.h)
     var args = []
-    if (isFull(r)) args.push("--fullscreen")
     if (root.desktopAudio) args.push("--with-desktop-audio")
     if (root.microphone) args.push("--with-microphone-audio")
     if (root.webcam) args.push("--with-webcam")
-    var cmd = "omarchy-capture-screenrecording " + args.join(" ")
-    if (!isFull(r)) {
-      var sel = Math.round(r.x + root.monitor.x) + "," + Math.round(r.y + root.monitor.y) + " "
-        + Math.round(r.w) + "x" + Math.round(r.h)
-      cmd = "ZIRU_CAPTURE_SELECTION=" + shellQuote(sel) + " PATH=" + shellQuote(root.helperDir + "/shim") + ":\"$PATH\" " + cmd
-    }
+    var cmd = "ZIRU_CAPTURE_SELECTION=" + shellQuote(sel) + " PATH=" + shellQuote(root.helperDir + "/shim") + ":\"$PATH\" "
+      + "omarchy-capture-screenrecording " + args.join(" ")
     root.run(cmd, true)
   }
 
-  // Enter / the Capture button: start the timer, or take what is highlighted.
+  // Enter: start the timer, or take what is highlighted.
   function confirm() {
     if (root.timerPending) { startTimer(); return }
-    captureRect(root.hoverRect || (root.target === "window" ? null : fullRect()))
+    captureRect(root.target === "screen" ? fullRect() : (root.hoverRect || (root.target === "window" ? null : fullRect())))
   }
 
   function startTimer() {
@@ -276,12 +286,13 @@ Item {
     Quickshell.execDetached(["bash", "-c",
       "export PATH=" + shellQuote(root.omarchyPath + "/bin") + ":\"$PATH\"; "
       + "omarchy-notification-send 'Screenshot in " + n + " seconds' -t " + (n * 1000) + " || true; "
-      + "sleep " + n + "; omarchy-shell shell summon ziru.capture '{\"skipDelay\":true}'"])
+      + "sleep " + n + "; omarchy-notification-dismiss 'Screenshot in'; sleep 0.3; "
+      + "omarchy-shell shell summon ziru.capture '{\"skipDelay\":true}'"])
   }
 
-  function stopRecording() {
-    root.dismiss()
-    Quickshell.execDetached(["bash", "-c", "export PATH=" + shellQuote(root.omarchyPath + "/bin") + ":\"$PATH\"; omarchy-capture-screenrecording --stop-recording"])
+  function setTarget(t) {
+    root.target = t
+    root.hoverRect = null
   }
 
   function cycleDelay() {
@@ -293,7 +304,7 @@ Item {
   function glyph(cp) { return String.fromCodePoint(cp) }
 
   readonly property string hint: {
-    if (root.timerPending) return "Press Enter to start the " + root.delay + " second timer"
+    if (root.timerPending) return "Click or press Enter to start the " + root.delay + " second timer"
     if (root.target === "screen") return "Click anywhere or press Enter to capture the whole screen"
     if (root.target === "window") return "Click a window to capture it"
     return "Drag a region, click a window, or click empty space for the whole screen"
@@ -329,7 +340,7 @@ Item {
     Image {
       id: frozen
       anchors.fill: parent
-      source: root.frozenSerial > 0 ? "file://" + root.frozenFile + "?" + root.frozenSerial : ""
+      source: root.frozenSerial > 0 && root.frameFile ? "file://" + root.frameFile : ""
       cache: false
       smooth: false
       fillMode: Image.Stretch
@@ -391,7 +402,6 @@ Item {
     MouseArea {
       anchors.fill: parent
       hoverEnabled: true
-      enabled: !root.timerPending
       cursorShape: Qt.CrossCursor
 
       onPositionChanged: function(mouse) {
@@ -406,11 +416,13 @@ Item {
         }
       }
       onPressed: function(mouse) {
+        if (root.timerPending) return
         root.pressed = true
         root.pressX = mouse.x; root.pressY = mouse.y
         root.dragX = mouse.x; root.dragY = mouse.y
       }
       onReleased: function(mouse) {
+        if (root.timerPending) { root.pressed = false; root.startTimer(); return }
         var wasDragging = root.dragging
         var r = wasDragging ? root.dragRect() : root.targetAt(mouse.x, mouse.y)
         root.pressed = false
@@ -447,9 +459,9 @@ Item {
           else if (k === Qt.Key_Return || k === Qt.Key_Enter || k === Qt.Key_Space) root.confirm()
           else if (k === Qt.Key_1) root.mode = "screenshot"
           else if (k === Qt.Key_2) root.mode = "record"
-          else if (k === Qt.Key_R) root.target = "region"
-          else if (k === Qt.Key_W) root.target = "window"
-          else if (k === Qt.Key_F) root.target = "screen"
+          else if (k === Qt.Key_R) root.setTarget("region")
+          else if (k === Qt.Key_W) root.setTarget("window")
+          else if (k === Qt.Key_F) root.setTarget("screen")
           else if (k === Qt.Key_D) root.cycleDelay()
           else if (k === Qt.Key_A && root.mode === "record") root.desktopAudio = !root.desktopAudio
           else if (k === Qt.Key_M && root.mode === "record") root.microphone = !root.microphone
@@ -457,7 +469,6 @@ Item {
           else if (k === Qt.Key_T) root.run("omarchy-capture-text", false)
           else if (k === Qt.Key_Q) root.run("omarchy-capture-qr", false)
           else if (k === Qt.Key_P) root.run("pkill hyprpicker || hyprpicker -a", false)
-          else if (k === Qt.Key_S && root.recording) root.stopRecording()
           else handled = false
           event.accepted = handled
         }
@@ -471,14 +482,6 @@ Item {
 
         Row {
           spacing: Style.spacing.sm
-
-          ToolButton {
-            visible: root.recording
-            iconText: root.glyph(0xF04DB); text: "Stop recording"; tooltipText: "S"
-            foreground: Commons.Color.urgent
-            onClicked: root.stopRecording()
-          }
-          Divider { visible: root.recording }
 
           ToolButton {
             iconText: root.glyph(0xF030); text: "Screenshot"; tooltipText: "1"
@@ -496,17 +499,17 @@ Item {
           ToolButton {
             iconText: root.glyph(0xF0A6D); text: "Region"; tooltipText: "R"
             selected: root.target === "region"
-            onClicked: { root.target = "region"; root.hoverRect = null }
+            onClicked: root.setTarget("region")
           }
           ToolButton {
             iconText: root.glyph(0xF05AF); text: "Window"; tooltipText: "W"
             selected: root.target === "window"
-            onClicked: { root.target = "window"; root.hoverRect = null }
+            onClicked: root.setTarget("window")
           }
           ToolButton {
             iconText: root.glyph(0xF0379); text: "Screen"; tooltipText: "F"
             selected: root.target === "screen"
-            onClicked: { root.target = "screen"; root.hoverRect = root.fullRect() }
+            onClicked: root.setTarget("screen")
           }
 
           Divider {}
