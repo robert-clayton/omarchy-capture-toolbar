@@ -1,0 +1,15 @@
+#!/bin/bash
+# Stop Omarchy's screen recording and put the saved video on the clipboard as a
+# file, the way a screenshot lands there. Exits 1 when nothing was recording,
+# so a key binding can fall through to something else with ||.
+out=$(omarchy-capture-screenrecording --stop-recording) || exit 1
+path=$(tail -n 1 <<<"$out")
+[[ -f $path ]] || exit 0
+
+# text/uri-list pastes as a file attachment in chat apps, browsers and file managers.
+uri="file://"
+for ((i = 0; i < ${#path}; i++)); do
+  c=${path:i:1}
+  if [[ $c == [A-Za-z0-9/._~-] ]]; then uri+=$c; else printf -v hex '%%%02X' "'$c"; uri+=$hex; fi
+done
+wl-copy --type text/uri-list <<<"$uri"

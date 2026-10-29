@@ -24,6 +24,17 @@ check "shim echoes a region" '[[ $(ZIRU_CAPTURE_SELECTION="10,20 300x200" bin/sh
 check "shim echoes a monitor" '[[ $(ZIRU_CAPTURE_SELECTION="monitor:DP-4" bin/shim/omarchy-capture-region) == "monitor:DP-4" ]]'
 check "shim fails without a selection" '! ZIRU_CAPTURE_SELECTION= bin/shim/omarchy-capture-region'
 
+# stop-recording copies the saved video as a percent-encoded file URI, and
+# exits 1 when nothing was recording so a binding can fall through
+mkdir -p "$tmp/my vids" && touch "$tmp/my vids/rec #1.mp4"
+printf '#!/bin/sh\necho "%s"\n' "$tmp/my vids/rec #1.mp4" >"$tmp/stub/omarchy-capture-screenrecording"
+printf '#!/bin/sh\ncat >"%s/clip"\n' "$tmp" >"$tmp/stub/wl-copy"
+chmod +x "$tmp/stub/"*
+PATH="$tmp/stub:$PATH" bin/stop-recording
+check "stop-recording copies the video" '[[ $(cat "$tmp/clip") == "file://${tmp// /%20}/my%20vids/rec%20%231.mp4" ]]'
+printf '#!/bin/sh\nexit 1\n' >"$tmp/stub/omarchy-capture-screenrecording"
+check "stop-recording fails when idle" '! PATH="$tmp/stub:$PATH" bin/stop-recording'
+
 if hyprctl version &>/dev/null; then
   before=$(hyprctl getoption cursor:no_hardware_cursors -j | jq .int)
   check "grab writes a frame and JSON" 'bin/grab "$tmp/ziru-capture-frame-1.png" | jq -e .monitor.name >/dev/null && [[ -s $tmp/ziru-capture-frame-1.png ]]'

@@ -53,6 +53,19 @@ Item {
   property bool frameHandedOff: false
   // False once the toolbar is closed, so a grab that finishes late is dropped.
   property bool wanted: false
+  property var monitorScreen: null
+
+  // Recording controls: shown while a recording this toolbar started runs.
+  property bool recActive: false
+  property string recPhase: ""          // starting | recording
+  property var recRect: null            // monitor-local; null for a whole monitor
+  property var recScreen: null          // the screen showing the controls
+  property bool recPaused: false
+  property real recStarted: 0
+  property real recPausedAt: 0
+  property real recPausedTotal: 0
+  property real recDeadline: 0
+  property int recElapsed: 0
 
   // Selection
   property bool pressed: false
@@ -141,7 +154,8 @@ Item {
 
     var screens = Quickshell.screens || []
     for (var i = 0; i < screens.length; i++)
-      if (screens[i].name === m.name) panel.screen = screens[i]
+      if (screens[i].name === m.name) root.monitorScreen = screens[i]
+    if (root.monitorScreen) panel.screen = root.monitorScreen
 
     var shown = [m.activeWorkspace ? m.activeWorkspace.id : -1,
                  m.specialWorkspace && m.specialWorkspace.id ? m.specialWorkspace.id : -1]
@@ -270,7 +284,84 @@ Item {
     if (root.webcam) args.push("--with-webcam")
     var cmd = "ZIRU_CAPTURE_SELECTION=" + shellQuote(sel) + " PATH=" + shellQuote(root.helperDir + "/shim") + ":\"$PATH\" "
       + "omarchy-capture-screenrecording " + args.join(" ")
+    root.showRecordingControls(r)
     root.run(cmd, true)
+  }
+
+  // ---- recording controls ------------------------------------------------
+
+  function showRecordingControls(r) {
+    var full = isFull(r)
+    var hudScreen = root.monitorScreen
+    // A whole-monitor recording would film its own controls; use another monitor if there is one.
+    if (full) {
+      var screens = Quickshell.screens || []
+      for (var i = 0; i < screens.length; i++)
+        if (screens[i].name !== root.monitor.name) { hudScreen = screens[i]; break }
+    }
+    root.recRect = full ? null : { x: r.x, y: r.y, w: r.w, h: r.h }
+    root.recScreen = hudScreen
+    root.recPaused = false
+    root.recPausedTotal = 0
+    root.recElapsed = 0
+    root.recPhase = "starting"
+    root.recDeadline = Date.now() + (root.delay + 15) * 1000
+    root.recActive = true
+  }
+
+  function hideRecordingControls() {
+    root.recActive = false
+    root.recPhase = ""
+  }
+
+  function togglePause() {
+    Quickshell.execDetached(["pkill", "-USR2", "-f", "^gpu-screen-recorder"])
+    var now = Date.now()
+    if (root.recPaused) root.recPausedTotal += now - root.recPausedAt
+    else root.recPausedAt = now
+    root.recPaused = !root.recPaused
+  }
+
+  function stopRecording() {
+    root.hideRecordingControls()
+    Quickshell.execDetached(["bash", "-c", "export PATH=" + shellQuote(root.omarchyPath + "/bin") + ":\"$PATH\"; "
+      + shellQuote(root.helperDir + "/stop-recording")])
+  }
+
+  function clock(seconds) {
+    var m = Math.floor(seconds / 60), sec = seconds % 60
+    return (m < 10 ? "0" : "") + m + ":" + (sec < 10 ? "0" : "") + sec
+  }
+
+  // Follow the recorder: it starts after the delay, and Print can stop it.
+  Timer {
+    interval: 500
+    repeat: true
+    running: root.recActive
+    onTriggered: if (!recCheck.running) recCheck.running = true
+  }
+
+  Process {
+    id: recCheck
+    command: ["pgrep", "-f", "^gpu-screen-recorder"]
+    onExited: function(exitCode) {
+      if (!root.recActive) return
+      if (exitCode === 0) {
+        if (root.recPhase === "starting") {
+          root.recPhase = "recording"
+          root.recStarted = Date.now()
+        }
+      } else if (root.recPhase === "recording" || Date.now() > root.recDeadline) {
+        root.hideRecordingControls()
+      }
+    }
+  }
+
+  Timer {
+    interval: 250
+    repeat: true
+    running: root.recActive && root.recPhase === "recording" && !root.recPaused
+    onTriggered: root.recElapsed = Math.floor((Date.now() - root.recStarted - root.recPausedTotal) / 1000)
   }
 
   // Enter: start the timer, or take what is highlighted.
@@ -572,6 +663,95 @@ Item {
           opacity: 0.6
           font.family: Style.font.menuFamily
           font.pixelSize: Style.font.body
+        }
+      }
+    }
+  }
+
+  // Recording frame and controls. The frame sits just outside the recorded
+  // area so it never appears in the video; only the bar takes clicks.
+  PanelWindow {
+    id: recHud
+    visible: root.recActive && root.recPhase === "recording" && root.recScreen !== null
+    screen: root.recScreen
+    anchors { top: true; bottom: true; left: true; right: true }
+    color: "transparent"
+    WlrLayershell.namespace: "ziru-capture-recording"
+    WlrLayershell.layer: WlrLayer.Overlay
+    WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
+    exclusionMode: ExclusionMode.Ignore
+    mask: Region { item: recBar }
+
+    Rectangle {
+      readonly property int bw: Math.max(2, Style.space(2))
+      visible: !!root.recRect
+      x: root.recRect ? root.recRect.x - bw : 0
+      y: root.recRect ? root.recRect.y - bw : 0
+      width: root.recRect ? root.recRect.w + bw * 2 : 0
+      height: root.recRect ? root.recRect.h + bw * 2 : 0
+      color: "transparent"
+      border.color: Commons.Color.urgent
+      border.width: bw
+      opacity: root.recPaused ? 0.45 : 1
+    }
+
+    BorderSurface {
+      id: recBar
+      readonly property int gap: Style.space(10)
+      readonly property int edge: Style.space(8)
+      width: recRow.implicitWidth + recBar.contentLeftInset + recBar.contentRightInset
+      height: recRow.implicitHeight + recBar.contentTopInset + recBar.contentBottomInset
+      // Centered over the region, above it when there is room, else below it,
+      // else inside its top edge. A whole monitor puts it at the top.
+      x: {
+        var r = root.recRect
+        var cx = r ? r.x + r.w / 2 - width / 2 : (recHud.width - width) / 2
+        return Math.max(edge, Math.min(recHud.width - width - edge, cx))
+      }
+      y: {
+        var r = root.recRect
+        if (!r) return Style.space(56)
+        if (r.y - gap - height >= edge) return r.y - gap - height
+        if (r.y + r.h + gap + height <= recHud.height - edge) return r.y + r.h + gap
+        return r.y + gap
+      }
+      radius: Style.cornerRadius
+      color: root.background
+      borderSpec: root.borderSpec
+      padding: Style.spacing.md
+
+      Row {
+        id: recRow
+        x: recBar.contentLeftInset
+        y: recBar.contentTopInset
+        spacing: Style.spacing.sm
+
+        Rectangle {
+          width: Style.font.body * 0.7
+          height: width
+          radius: width / 2
+          anchors.verticalCenter: parent.verticalCenter
+          color: root.recPaused ? root.foreground : Commons.Color.urgent
+          opacity: root.recPaused ? 0.5 : 1
+        }
+        Text {
+          anchors.verticalCenter: parent.verticalCenter
+          text: (root.recPaused ? "Paused " : "") + root.clock(root.recElapsed)
+          color: root.foreground
+          font.family: Style.font.menuFamily
+          font.pixelSize: Style.font.body
+        }
+        Divider {}
+        ToolButton {
+          iconText: root.glyph(root.recPaused ? 0xF040A : 0xF03E4)
+          text: root.recPaused ? "Resume" : "Pause"
+          onClicked: root.togglePause()
+        }
+        ToolButton {
+          iconText: root.glyph(0xF04DB)
+          text: "Stop"
+          foreground: Commons.Color.urgent
+          onClicked: root.stopRecording()
         }
       }
     }
