@@ -1,0 +1,5 @@
+#!/bin/bash
+# Stand-in for Omarchy's region picker: omarchy-capture-screenrecording asks it
+# for a target, and the toolbar has already chosen one ("X,Y WxH", logical).
+[[ -n $ZIRU_CAPTURE_SELECTION ]] || exit 1
+echo "$ZIRU_CAPTURE_SELECTION"

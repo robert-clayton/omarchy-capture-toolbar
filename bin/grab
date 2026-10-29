@@ -1,0 +1,18 @@
+#!/bin/bash
+# Freeze the focused monitor into $1 (PNG) and print its geometry plus the
+# windows on it as JSON, for the ziru.capture toolbar.
+out=$1
+mon=$(hyprctl monitors -j | jq -c 'map(select(.focused))[0]')
+name=$(jq -r .name <<<"$mon")
+
+# Software cursors get baked into grim frames; switch to hardware cursors for the grab.
+hw=$(hyprctl getoption cursor:no_hardware_cursors -j | jq '.int')
+set_hw() {
+  hyprctl eval "hl.config({ cursor = { no_hardware_cursors = $1 } })" &>/dev/null ||
+    hyprctl keyword cursor:no_hardware_cursors "$1" &>/dev/null
+}
+if [[ $hw != 0 ]]; then set_hw 0; sleep 0.03; fi
+grim -l 0 -o "$name" "$out.part" && mv -f "$out.part" "$out"
+if [[ $hw != 0 ]]; then set_hw "$hw"; fi
+
+jq -cn --argjson m "$mon" --argjson c "$(hyprctl clients -j)" '{monitor: $m, clients: $c}'

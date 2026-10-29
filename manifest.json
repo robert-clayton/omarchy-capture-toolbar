@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "ziru.capture",
+  "name": "Capture toolbar",
+  "version": "1.0.0",
+  "author": "ziru",
+  "description": "Snipping-style toolbar for screenshots, recordings and screen tools",
+  "kinds": [
+    "overlay"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "Toolbar.qml"
+  }
+}

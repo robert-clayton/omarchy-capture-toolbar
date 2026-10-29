@@ -1,0 +1,16 @@
+#!/bin/bash
+# Crop the frozen frame to a selection (physical pixels) and finish the way
+# omarchy-capture-screenshot does: save, copy, notify with an Edit action.
+frozen=$1 x=$2 y=$3 w=$4 h=$5
+[[ -f ~/.config/user-dirs.dirs ]] && source ~/.config/user-dirs.dirs
+OUTPUT_DIR="${OMARCHY_SCREENSHOT_DIR:-${XDG_PICTURES_DIR:-$HOME/Pictures}}"
+mkdir -p "$OUTPUT_DIR"
+FILEPATH="$OUTPUT_DIR/screenshot-$(date +'%Y-%m-%d_%H-%M-%S').png"
+magick "$frozen" -crop "${w}x${h}+${x}+${y}" +repage "$FILEPATH" || {
+  omarchy-notification-send -u critical "Screenshot failed" "Could not crop the frozen frame"
+  exit 1
+}
+echo "$FILEPATH"
+wl-copy --type image/png <"$FILEPATH"
+omarchy-notification-send "Screenshot saved to clipboard and file" "Edit with Super + Alt + , (or click this)" \
+  --image "$FILEPATH" --exec "${OMARCHY_SCREENSHOT_EDITOR:-tensaku-edit}" "$FILEPATH" || true
